@@ -125,8 +125,8 @@ def draw_annotation(image: np.ndarray, points: List[Tuple[int, int]], colors: Li
         radius (int): Radius of the circle to draw.
     """
     sorted_points = sorted(points, key=lambda pt: pt[1])  # Sort vertically for consistent color assignment
-    for i, pt in enumerate(sorted_points):
-        color = colors[i % len(colors)]
+    for i, pt in enumerate(points):
+        color = colors[i % len(colors)]  # Loop color if more points than colors
         cv2.circle(image, pt, radius, color, -1)
 
 

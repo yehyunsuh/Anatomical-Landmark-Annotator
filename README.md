@@ -1,14 +1,15 @@
-# 🧭 Anatomical-Landmark-Annotator
+# Anatomical-Landmark-Annotator
 
 An interactive Python tool for manually annotating anatomical landmarks on medical or scientific images. Click to place a fixed number of landmarks, view real-time colored markers and legends, and save results as both `.csv` and visualized images.
 
 ---
 
 ## ⚙️ Environment Setting
-
 Set up the Conda environment and install dependencies:
 
 ```bash
+git clone https://github.com/yehyunsuh/Anatomical-Landmark-Annotator.git
+cd Anatomical-Landmark-Annotator
 conda create -n annotator python=3.10 -y
 conda activate annotator
 pip3 install -r requirements.txt
@@ -58,7 +59,8 @@ Use the following controls during the annotation session:
 | ⌨️ `p`         | Go back to the previous image                          |
 | ⌨️ `q`         | Quit the annotation session                            |
 
-> ⚠️ Landmarks are saved only when you press `n`. If you quit (`q`) before pressing `n`, current annotations will not be saved.
+> ⚠️ Landmarks are saved only when you press `n`. If you quit (`q`) before pressing `n`, current annotations will not be saved.   
+> ⚠️ When you re-annotate an image that has been annotating using `p`, previous annotation will be deleted.
 
 ## 📊 Output
 After annotation, two types of output are generated:
@@ -69,9 +71,9 @@ Saved in:
 ```
 output_images/<input_folder_name>_<timestamp>/
 ```
-Each image contains:
-	•	Colored circles marking the landmarks
-	•	A dynamically scaled legend on the right
+Each image contains:   
+- Colored circles marking the landmarks   
+- A dynamically scaled legend on the right   
 
 📄 CSV File
 
@@ -86,6 +88,15 @@ landmark_1_x, landmark_1_y, ..., landmark_N_x, landmark_N_y
 ```
 Missing landmarks (if fewer than n_clicks are placed) are left blank.
 
-## 👨‍💻 Author
-Yehyun Suh  
-© 2025 Yehyun Suh. All rights reserved.
+## Citation
+If you find this tool helpful, please cite this [paper](https://openreview.net/forum?id=bVC9bi_-t7Y):
+```
+@inproceedings{
+suh2023dilationerosion,
+title={Dilation-Erosion Methods for Radiograph Annotation in Total Knee Replacement},
+author={Yehyun Suh and Aleksander Mika and J. Ryan Martin and Daniel Moyer},
+booktitle={Medical Imaging with Deep Learning, short paper track},
+year={2023},
+url={https://openreview.net/forum?id=bVC9bi_-t7Y}
+}
+```
