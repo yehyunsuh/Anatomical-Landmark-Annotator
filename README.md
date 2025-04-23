@@ -3,7 +3,7 @@
 An interactive Python tool for manually annotating anatomical landmarks on medical or scientific images. Click to place a fixed number of landmarks, view real-time colored markers and legends, and save results as both `.csv` and visualized images.
 
 - For converting dicom files to png files, please visit https://github.com/yehyunsuh/DICOM-to-PNG
-- For collecting anatomical landmark dataset, please visit https://github.com/yehyunsuh/Anatomical-Landmark-Annotator
+- For training, please visit https://github.com/yehyunsuh/Anatomical-Landmark-Detector-Training
 - For testing, please visit https://github.com/yehyunsuh/Anatomical-Landmark-Detector-Testing
 
 ---
