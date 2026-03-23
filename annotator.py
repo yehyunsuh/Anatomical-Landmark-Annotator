@@ -25,7 +25,6 @@ import math
 import os
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import cv2
@@ -76,6 +75,11 @@ class WorkflowStage:
     def stage_key(self) -> Tuple[str, str, str]:
         """Return a stable key for indexing saved annotations by patient/type/task."""
         return (self.patient_id, self.image_type, self.task_name)
+
+    @property
+    def checklist_id(self) -> str:
+        """Return a human-editable identifier used in the checklist file."""
+        return f"{self.patient_id}|{self.image_name}|{self.image_type}|{self.task_name}"
 
 
 @dataclass
@@ -1297,14 +1301,195 @@ def annotation_record_to_row(record: AnnotationRecord, max_landmarks: int) -> Li
         record.image_height,
         record.n_landmarks,
         *flattened_points,
-        format_measurement_value(record.measurements.trans_teardrop_length),
-        format_measurement_value(record.measurements.perpendicular_distance),
         format_measurement_value(record.measurements.pelvic_tilt_ratio),
+        format_measurement_value(compute_final_pelvic_tilt_value(record.measurements.pelvic_tilt_ratio)),
         format_measurement_value(record.measurements.cup_inclination),
         format_measurement_value(record.measurements.cup_anteversion),
         format_measurement_value(record.measurements.leg_length),
         record.measurements.selected_teardrop,
     ]
+
+
+def get_csv_header(max_landmarks: int) -> List[str]:
+    """
+    Build the CSV header for coordinates plus task-specific measurements.
+
+    Args:
+        max_landmarks (int): Maximum landmark count across all workflow stages.
+
+    Returns:
+        List[str]: Ordered CSV header fields.
+    """
+    header = [
+        "patient_id",
+        "image_name",
+        "image_type",
+        "task_name",
+        "image_width",
+        "image_height",
+        "n_landmarks",
+    ]
+    for index in range(max_landmarks):
+        header.extend([f"landmark_{index + 1}_x", f"landmark_{index + 1}_y"])
+    header.extend(
+        [
+            "pelvic_tilt_ratio",
+            "pelvic_tilt",
+            "cup_anteversion",
+            "cup_inclination",
+            "leg_length",
+            "selected_teardrop",
+        ]
+    )
+    return header
+
+
+def parse_optional_float(value: str) -> Optional[float]:
+    """
+    Parse an optional float field from CSV text.
+
+    Args:
+        value (str): CSV text value.
+
+    Returns:
+        Optional[float]: Parsed float or None when blank.
+    """
+    if value == "":
+        return None
+    return float(value)
+
+
+def record_from_csv_row(row: Dict[str, str]) -> AnnotationRecord:
+    """
+    Reconstruct an annotation record from a CSV row.
+
+    Args:
+        row (Dict[str, str]): CSV row keyed by header.
+
+    Returns:
+        AnnotationRecord: Parsed annotation record.
+    """
+    n_landmarks = int(row["n_landmarks"])
+    points: List[Tuple[int, int]] = []
+    for index in range(n_landmarks):
+        x_value = row.get(f"landmark_{index + 1}_x", "")
+        y_value = row.get(f"landmark_{index + 1}_y", "")
+        if x_value == "" or y_value == "":
+            continue
+        points.append((int(float(x_value)), int(float(y_value))))
+
+    return AnnotationRecord(
+        patient_id=row["patient_id"],
+        image_name=row["image_name"],
+        image_type=row["image_type"],
+        task_name=row["task_name"],
+        image_width=int(row["image_width"]),
+        image_height=int(row["image_height"]),
+        n_landmarks=n_landmarks,
+        points=points,
+        measurements=MeasurementResult(
+            pelvic_tilt_ratio=parse_optional_float(row.get("pelvic_tilt_ratio", "")),
+            cup_anteversion=parse_optional_float(row.get("cup_anteversion", "")),
+            cup_inclination=parse_optional_float(row.get("cup_inclination", "")),
+            leg_length=parse_optional_float(row.get("leg_length", "")),
+            selected_teardrop=row.get("selected_teardrop", ""),
+        ),
+    )
+
+
+def load_existing_records(output_file: str) -> Dict[Tuple[str, str, str], AnnotationRecord]:
+    """
+    Load existing annotations from a persistent CSV file.
+
+    Args:
+        output_file (str): CSV path.
+
+    Returns:
+        Dict[Tuple[str, str, str], AnnotationRecord]: Existing records keyed by workflow stage.
+    """
+    if not os.path.exists(output_file):
+        return {}
+
+    existing_records: Dict[Tuple[str, str, str], AnnotationRecord] = {}
+    with open(output_file, "r", newline="") as csv_file:
+        reader = csv.DictReader(csv_file)
+        for row in reader:
+            record = record_from_csv_row(row)
+            stage_key = (record.patient_id, record.image_type, record.task_name)
+            existing_records[stage_key] = record
+    return existing_records
+
+
+def load_checklist_ids(
+    checklist_file: str,
+    ordered_stages: Sequence[WorkflowStage],
+    existing_records: Dict[Tuple[str, str, str], AnnotationRecord],
+) -> set[str]:
+    """
+    Load the checklist of completed stage identifiers.
+
+    If the checklist file does not exist yet, initialize it from the existing CSV rows so
+    already-annotated stages are skipped on the next run.
+
+    Args:
+        checklist_file (str): Checklist path.
+        ordered_stages (Sequence[WorkflowStage]): Full workflow stage order.
+        existing_records (Dict[Tuple[str, str, str], AnnotationRecord]): Existing CSV-backed records.
+
+    Returns:
+        set[str]: Completed stage identifiers.
+    """
+    if os.path.exists(checklist_file):
+        completed_stage_ids: set[str] = set()
+        with open(checklist_file, "r", encoding="utf-8") as checklist_handle:
+            for line in checklist_handle:
+                checklist_id = line.strip()
+                if checklist_id:
+                    completed_stage_ids.add(checklist_id)
+        return completed_stage_ids
+
+    stage_id_by_key = {stage.stage_key: stage.checklist_id for stage in ordered_stages}
+    return {stage_id_by_key[key] for key in existing_records if key in stage_id_by_key}
+
+
+def write_checklist_file(
+    checklist_file: str,
+    ordered_stages: Sequence[WorkflowStage],
+    completed_stage_ids: set[str],
+) -> None:
+    """
+    Write the checklist file in workflow order.
+
+    Args:
+        checklist_file (str): Checklist path.
+        ordered_stages (Sequence[WorkflowStage]): Full workflow stage order.
+        completed_stage_ids (set[str]): Completed stage identifiers.
+    """
+    with open(checklist_file, "w", encoding="utf-8") as checklist_handle:
+        for stage in ordered_stages:
+            if stage.checklist_id in completed_stage_ids:
+                checklist_handle.write(f"{stage.checklist_id}\n")
+
+
+def persist_annotation_state(
+    output_file: str,
+    checklist_file: str,
+    ordered_stages: Sequence[WorkflowStage],
+    annotation_records: Dict[Tuple[str, str, str], AnnotationRecord],
+    completed_stage_ids: set[str],
+) -> None:
+    """
+    Persist both the CSV and checklist so progress survives partial sessions.
+
+    Args:
+        output_file (str): CSV path.
+        checklist_file (str): Checklist path.
+        ordered_stages (Sequence[WorkflowStage]): Full workflow stage order.
+        annotation_records (Dict[Tuple[str, str, str], AnnotationRecord]): Saved records.
+        completed_stage_ids (set[str]): Completed stage identifiers.
+    """
+    write_annotations_csv(output_file, ordered_stages, annotation_records)
+    write_checklist_file(checklist_file, ordered_stages, completed_stage_ids)
 
 
 def write_annotations_csv(
@@ -1321,28 +1506,7 @@ def write_annotations_csv(
         annotation_records (Dict[Tuple[str, str, str], AnnotationRecord]): Saved records by stage key.
     """
     max_landmarks = max(stage.n_landmarks for stage in ordered_stages)
-    header = [
-        "patient_id",
-        "image_name",
-        "image_type",
-        "task_name",
-        "image_width",
-        "image_height",
-        "n_landmarks",
-    ]
-    for index in range(max_landmarks):
-        header.extend([f"landmark_{index + 1}_x", f"landmark_{index + 1}_y"])
-    header.extend(
-        [
-            "trans_teardrop_length",
-            "perpendicular_distance",
-            "pelvic_tilt_ratio",
-            "cup_inclination",
-            "cup_anteversion",
-            "leg_length",
-            "selected_teardrop",
-        ]
-    )
+    header = get_csv_header(max_landmarks)
 
     rows: List[List[object]] = []
     for stage in ordered_stages:
@@ -1364,9 +1528,9 @@ def main(args) -> None:
         args: Parsed command line arguments.
     """
     input_dir_name = os.path.basename(os.path.abspath(args.input))
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_file = os.path.join(args.output_coordinates, f"{input_dir_name}_{timestamp}.csv")
-    visualization_dir = os.path.join(args.output, f"{input_dir_name}_{timestamp}")
+    output_file = os.path.join(args.output_coordinates, f"{input_dir_name}.csv")
+    checklist_file = os.path.join(args.output_coordinates, f"{input_dir_name}_checklist.txt")
+    visualization_dir = os.path.join(args.output, input_dir_name)
 
     os.makedirs(args.output, exist_ok=True)
     os.makedirs(args.output_coordinates, exist_ok=True)
@@ -1381,15 +1545,24 @@ def main(args) -> None:
 
     print_workflow_summary(workflow_stages)
 
-    annotation_records: Dict[Tuple[str, str, str], AnnotationRecord] = {}
+    annotation_records = load_existing_records(output_file)
+    completed_stage_ids = load_checklist_ids(checklist_file, workflow_stages, annotation_records)
+
+    pending_stages = [stage for stage in workflow_stages if stage.checklist_id not in completed_stage_ids]
+    if not pending_stages:
+        print("All workflow stages are already marked complete in the checklist.")
+        print(f"Checklist file: {checklist_file}")
+        print(f"CSV file: {output_file}")
+        return
+
     current_stage_index = 0
 
-    while 0 <= current_stage_index < len(workflow_stages):
-        stage = workflow_stages[current_stage_index]
+    while 0 <= current_stage_index < len(pending_stages):
+        stage = pending_stages[current_stage_index]
         prior_record = annotation_records.get(stage.stage_key)
 
         print(
-            f"Annotating stage {current_stage_index + 1}/{len(workflow_stages)}: "
+            f"Annotating pending stage {current_stage_index + 1}/{len(pending_stages)}: "
             f"patient={stage.patient_id}, image_type={stage.image_type}, task={stage.task_name}, "
             f"required_clicks={stage.n_landmarks}, image={stage.image_name}"
         )
@@ -1397,7 +1570,7 @@ def main(args) -> None:
         action, record = show_stage(
             stage=stage,
             stage_index=current_stage_index,
-            total_stages=len(workflow_stages),
+            total_stages=len(pending_stages),
             prior_points=prior_record.points if prior_record is not None else None,
             vis_resize=args.vis_resize,
             visualization_dir=visualization_dir,
@@ -1406,6 +1579,14 @@ def main(args) -> None:
         if action == "next":
             if record is not None:
                 annotation_records[stage.stage_key] = record
+                completed_stage_ids.add(stage.checklist_id)
+                persist_annotation_state(
+                    output_file=output_file,
+                    checklist_file=checklist_file,
+                    ordered_stages=workflow_stages,
+                    annotation_records=annotation_records,
+                    completed_stage_ids=completed_stage_ids,
+                )
             current_stage_index += 1
         elif action == "prev":
             current_stage_index = max(0, current_stage_index - 1)
@@ -1415,8 +1596,15 @@ def main(args) -> None:
     cv2.destroyAllWindows()
 
     if annotation_records:
-        write_annotations_csv(output_file, workflow_stages, annotation_records)
+        persist_annotation_state(
+            output_file=output_file,
+            checklist_file=checklist_file,
+            ordered_stages=workflow_stages,
+            annotation_records=annotation_records,
+            completed_stage_ids=completed_stage_ids,
+        )
         print(f"\nAll annotations saved to: {output_file}")
+        print(f"Checklist saved to: {checklist_file}")
         print(f"Visualizations saved to: {visualization_dir}")
     else:
         print("\nNo annotations were saved.")
